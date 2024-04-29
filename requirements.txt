@@ -1,7 +1,8 @@
+blobfile==2.1.1
 numpy==1.23.5
 pytest==7.4.0
 Requests==2.31.0
-sentencepiece==0.1.99
+tiktoken==0.6.0
 torch==2.0.1
 tqdm==4.64.1
 wandb==0.15.5
