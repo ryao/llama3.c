@@ -81,7 +81,9 @@ You're very likely to get results that you like better from the instruct model. 
 ```
 
 > Enter system prompt (optional): You are a professional software programmer with 20 years experience and an IQ of 200 and you love helping people.
+> 
 > User: Give me a terse hello world in Rust
+> 
 > Assistant: A delightful request!
 >
 > Here is a terse "Hello, World!" program in Rust:
@@ -93,6 +95,7 @@ You're very likely to get results that you like better from the instruct model. 
 > This program defines a `main` function that calls the `println!` macro to print the string "Hello, World!" followed by a newline character.
 >
 > That's it! You can run this program using the `rustc` compiler and then executing the resulting executable file.
+> 
 > User:
 
 ## Meta's Llama 3 models
