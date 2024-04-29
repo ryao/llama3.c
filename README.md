@@ -39,7 +39,7 @@ https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct
 # compile and run the C code:
 
 ```bash
-make run
+gcc -Ofast run.c -o run
 ./run.exe "llama3_8b_instruct.bin" -z "tokenizer_llama3.bin" -m chat
 ./run.exe "llama3_8b_instruct.bin" -z "../dev/tokenizer_llama3.bin" -i "Once upon a time"
 ```
