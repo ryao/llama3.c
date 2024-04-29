@@ -28,6 +28,10 @@ Then, open the repository folder:
 cd llama3.c
 ```
 
+## which model do i download? base or instruct
+- If you do not know, go with the instruct model. It will work with both the single shot "generate" mode and the "chat" mode of llama3.c.
+- The "chat" mode of llama3.c only supports the instruct model and will surely not work with base model. You can try it for fun and learning at your own risk :).
+
 Download LLaMA 3 8B base and/or instruct. The huggingface site works. You'll need to sign up and get approved.
 Specifically download the `original` directory.
 
