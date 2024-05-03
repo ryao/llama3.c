@@ -40,6 +40,12 @@ https://huggingface.co/meta-llama/Meta-Llama-3-8B
 https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct
 ```
 
+When downloading these models I did have to rename the original-params.json to params.json for the export.py to work.
+
+```
+mv /d/llama3-8b-instruct/original_params.json /d/llama3-8b-instruct/params.json
+```
+
 # compile and run the C code:
 
 ```bash
