@@ -10,7 +10,7 @@ Have you ever wanted to inference a baby [Llama 3](https://ai.meta.com/llama/) m
 
 Run LLaMA 3 8B models with one simple 700-line C file ([run.c](run.c)). 
 
-The current code only inferences models in fp32, so you will most likely not be able to productively load models larger than 8B.
+The current code inferences models in both fp32 and int8 (see below).
 
 Please note that this repo is a modificaion of Andrej Karpathy's llama2.c but changing the hard coding to work with the modified-tiktoken tokenization used by the suite of Meta LLaMA 3 models.
 
