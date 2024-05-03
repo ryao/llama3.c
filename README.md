@@ -146,6 +146,26 @@ Then chat with it by specifying the chat mode using the `-m` flag, e.g.:
 ```bash
 ./run "llama3_8b_instruct.bin" -z "../dev/tokenizer_llama3.bin" -m chat
 ```
+## Int8 Quantization
+
+Compile the quantized version of the runtime:
+```bash
+gcc -Ofast -fopenmp -march=native runq.c win.c -o runq
+```
+Export a quantized version of the model. It is about 8GB vs 31.
+
+```bash
+python export.py llama3_8b_instruct_q80.bin --meta-llama ../llama3-8b-base/ --version 2
+```
+
+The export will take ~10 minutes or so. Once the export is done, we can run it:
+
+```bash
+./runq "llama3_8b_instruct_q80.bin" -z "../dev/tokenizer_llama3.bin"
+```
+
+This ran at about 4 tokens/s compiled with [OpenMP](#OpenMP) on 8 threads on my Intel i3 14th gen. Example output:
+
 
 ## License
 
