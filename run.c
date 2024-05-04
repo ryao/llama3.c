@@ -827,11 +827,12 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
 
     // buffers for reading the system prompt and user prompt from stdin
     // you'll notice they are somewhat haphazardly and unsafely set atm
-    char system_prompt[512];
-    char user_prompt[512];
-    char rendered_prompt[1152];
+    char* system_prompt = (char*)malloc(32768 * sizeof(char));
+    char* user_prompt = (char*)malloc(32768 * sizeof(char));
     int num_prompt_tokens = 0;
-    int* prompt_tokens = (int*)malloc(1152 * sizeof(int));
+    int* prompt_tokens = (int*)malloc(32768 * sizeof(int));
+    int* system_prompt_tokens = (int*)malloc(32768 * sizeof(int));
+    int* user_prompt_tokens = (int*)malloc(32768 * sizeof(int));
     int user_idx=0;
 
     // start the main loop
@@ -854,13 +855,12 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
                 prompt_tokens[num_prompt_tokens++] = 271; // "\n\n"
                 if (cli_system_prompt == NULL) {
                     // system prompt was not passed in, attempt to get it from stdin
-                    read_stdin("Enter system prompt (optional): ", system_prompt, sizeof(system_prompt));
+                    read_stdin("Enter system prompt (optional): ", system_prompt, 32768);
                 } else {
                     // system prompt was passed in, use it
                     strcpy(system_prompt, cli_system_prompt);
                 }
                 if (system_prompt != NULL) {
-                    int system_prompt_tokens[512];
                     int num_system_prompt_tokens = 0;
                     encode(tokenizer, system_prompt, 0, 0, system_prompt_tokens, &num_system_prompt_tokens);
                     for (int i=0; i<num_system_prompt_tokens; i++) {
@@ -879,9 +879,9 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
                 strcpy(user_prompt, cli_user_prompt);
             } else {
                 // otherwise get user prompt from stdin
-                read_stdin("User: ", user_prompt, sizeof(user_prompt));
+                read_stdin("User (or exit): ", user_prompt, 32768);
+                if(strcmp(user_prompt, "exit")==0) break;
             }
-            int user_prompt_tokens[512];
             int num_user_prompt_tokens = 0;
             // encode the user prompt into tokens
             encode(tokenizer, user_prompt, 0, 0, user_prompt_tokens, &num_user_prompt_tokens);
@@ -926,6 +926,10 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
     }
     printf("\n");
     free(prompt_tokens);
+    free(system_prompt_tokens);
+    free(user_prompt_tokens);
+    free(system_prompt);
+    free(user_prompt);
 }
 
 
