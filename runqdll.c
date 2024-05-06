@@ -1,4 +1,4 @@
-/* (FFI) shared library / DLL inference for Llama-3 Transformer model in pure C, int8 quantized forward pass. */
+/* Inference for Llama-3 Transformer model in pure C, int8 quantized forward pass. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -555,7 +555,7 @@ char* decode(Tokenizer* t, int prev_token, int token) {
     return piece;
 }
 
-void safe_printf(char *piece) {
+void safe_printf(char *piece, char *out_buffer) {
     // piece might be a raw byte token, and we only want to print printable chars or whitespace
     // because some of the other bytes can be various control codes, backspace, etc.
     if (piece == NULL) { return; }
@@ -566,7 +566,7 @@ void safe_printf(char *piece) {
             return; // bad byte, don't print it
         }
     }
-    printf("%s", piece);
+    strcat(out_buffer, piece);
 }
 
 int str_lookup(char *str, TokenIndex *sorted_vocab, int vocab_size) {
@@ -871,7 +871,7 @@ long time_in_ms() {
 // ----------------------------------------------------------------------------
 // generation loop
 
-void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps) {
+void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps, char *out_buffer) {
     char *empty_prompt = "";
     if (prompt == NULL) { prompt = empty_prompt; }
 
@@ -909,14 +909,14 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         if ((next == 128001 || next == 128009) && pos > num_prompt_tokens) break;
         // print the token as string, decode it with the Tokenizer object
         char* piece = decode(tokenizer, token, next);
-        safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
+        safe_printf(piece, out_buffer); // same as printf("%s", piece), but skips "unsafe" bytes
         fflush(stdout);
         token = next;
 
         // init the timer here because the first iteration can be slower
         if (start == 0) { start = time_in_ms(); }
     }
-    printf("\n");
+    strcat(out_buffer, "\n");
 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
@@ -927,9 +927,9 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     free(prompt_tokens);
 }
 
-void read_stdin(const char* guide, char* buffer, size_t bufsize) {
+void read_stdin(const char* guide, char* buffer, size_t bufsize, char *out_buffer) {
     // read a line from stdin, up to but not including \n
-    printf("%s", guide);
+    strcat(out_buffer, guide);
     if (fgets(buffer, bufsize, stdin) != NULL) {
         size_t len = strlen(buffer);
         if (len > 0 && buffer[len - 1] == '\n') {
@@ -945,7 +945,7 @@ void read_stdin(const char* guide, char* buffer, size_t bufsize) {
 // is not safely implemented, it's more a proof of concept atm.
 
 void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
-          char *cli_user_prompt, char *cli_system_prompt, int steps) {
+          char *cli_user_prompt, char *cli_system_prompt, int steps, char *out_buffer) {
 
     // buffers for reading the system prompt and user prompt from stdin
     // you'll notice they are somewhat haphazardly and unsafely set atm
@@ -977,7 +977,7 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
                 prompt_tokens[num_prompt_tokens++] = 271; // "\n\n"
                 if (cli_system_prompt == NULL) {
                     // system prompt was not passed in, attempt to get it from stdin
-                    read_stdin("Enter system prompt (optional): ", system_prompt, 32768);
+                    read_stdin("Enter system prompt (optional): ", system_prompt, 32768, out_buffer);
                 } else {
                     // system prompt was passed in, use it
                     strcpy(system_prompt, cli_system_prompt);
@@ -1001,7 +1001,7 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
                 strcpy(user_prompt, cli_user_prompt);
             } else {
                 // otherwise get user prompt from stdin
-                read_stdin("User (or exit): ", user_prompt, 32768);
+                read_stdin("User (or exit): ", user_prompt, 32768, out_buffer);
                 if(strcmp(user_prompt, "exit")==0) break;
             }
             int num_user_prompt_tokens = 0;
@@ -1019,7 +1019,7 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
 
             user_idx = 0; // reset the user index
             user_turn = 0;
-            printf("Assistant: ");
+            strcat(out_buffer, "Assistant: ");
         }
 
         // determine the token to pass into the transformer next
@@ -1041,12 +1041,12 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
         if (user_idx >= num_prompt_tokens && next != 128009 && next != 128001 && next != 128006) {
             // the Assistant is responding, so print its output
             char* piece = decode(tokenizer, token, next);
-            safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
+            safe_printf(piece, out_buffer); // same as printf("%s", piece), but skips "unsafe" bytes
             fflush(stdout);
         }
         if (user_idx >= num_prompt_tokens && next == 128009 || next == 128001) { printf("\n"); }
     }
-    printf("\n");
+    strcat(out_buffer, "\n");
     free(prompt_tokens);
     free(system_prompt_tokens);
     free(user_prompt_tokens);
@@ -1065,6 +1065,7 @@ typedef struct {
 	unsigned long long rng_seed;
 	char *mode;
 	char *system_prompt;
+	char out_buffer[32768];
 	Transformer transformer;
 	Tokenizer tokenizer;
 	Sampler sampler;
@@ -1106,14 +1107,15 @@ __declspec(dllexport) void free_main(Main *m) {
 	free(m);
 }
 
-__declspec(dllexport) int run_main(Main *m) {
+__declspec(dllexport) char *run_main(Main *m) {
     // run!
     if (strcmp(m->mode, "generate") == 0) {
-        generate(&m->transformer, &m->tokenizer, &m->sampler, m->prompt, m->steps);
+        generate(&m->transformer, &m->tokenizer, &m->sampler, m->prompt, m->steps, m->out_buffer);
     } else if (strcmp(m->mode, "chat") == 0) {
-        chat(&m->transformer, &m->tokenizer, &m->sampler, m->prompt, m->system_prompt, m->steps);
+        chat(&m->transformer, &m->tokenizer, &m->sampler, m->prompt, m->system_prompt, m->steps, m->out_buffer);
     } else {
         fprintf(stderr, "unknown mode: %s\n", m->mode);
     }
-    return 0;
+	printf("The buffer has: %s\n", m->out_buffer);
+    return m->out_buffer;
 }
