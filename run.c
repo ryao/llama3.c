@@ -871,6 +871,8 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
                     }
                 }
                 prompt_tokens[num_prompt_tokens++] = 128009; // "<|eot_id|>"
+            } else {
+                num_prompt_tokens = 0;
             }
             prompt_tokens[num_prompt_tokens++] = 128006; // "<|start_header_id|>"
             prompt_tokens[num_prompt_tokens++] = 882; // "user"
