@@ -238,13 +238,8 @@ void read_checkpoint(char* checkpoint, Config* config, TransformerWeights* weigh
     if (fread(&group_size, sizeof(int), 1, file) != 1) { exit(EXIT_FAILURE); }
     GS = group_size; // set as global, as it will be used in many places
     // figure out the file size
-#if defined _WIN32
-    _fseeki64(file, 0, SEEK_END); // move file pointer to end of file
-    *file_size = _ftelli64(file); // get the file size, in bytes
-#else
     fseek(file, 0, SEEK_END); // move file pointer to end of file
     *file_size = ftell(file); // get the file size, in bytes
-#endif
     fclose(file);
     // memory map the Transformer weights into the data pointer
     *fd = open(checkpoint, O_RDONLY); // open in read only mode
@@ -1058,7 +1053,6 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
 
 typedef struct {
 	char *checkpoint_path;
-// 0x616b3432616b3432
 	char *tokenizer_path;
 	float temperature;
 	float topp;
@@ -1118,6 +1112,5 @@ __declspec(dllexport) char *run_main(Main *m) {
     } else {
         fprintf(stderr, "unknown mode: %s\n", m->mode);
     }
-	printf("The buffer has: %s\n", m->out_buffer);
     return m->out_buffer;
 }
