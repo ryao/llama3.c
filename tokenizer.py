@@ -108,8 +108,7 @@ class Tokenizer:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-t", "--tokenizer-model", type=str, help="optional path to custom tokenizer ")
-        "-t", "--tokenizer-model", type=str, help="optional path to custom tokenizer "
-    )
+
     args = parser.parse_args()
 
     t = Tokenizer(args.tokenizer_model)
