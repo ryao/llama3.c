@@ -2,10 +2,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the Llama 3 Community License Agreement.
 
+import argparse
 import array
 import os
 import struct
-import argparse
 from pathlib import Path
 from typing import List
 
@@ -107,7 +107,9 @@ class Tokenizer:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-t", "--tokenizer-model", type=str, help="optional path to custom tokenizer ")
+    parser.add_argument(
+        "-t", "--tokenizer-model", type=str, help="optional path to custom tokenizer "
+    )
 
     args = parser.parse_args()
 
