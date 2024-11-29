@@ -19,7 +19,29 @@
 #elif defined(USE_OPENBLAS)
 #include <cblas.h>
 #elif defined(USE_BLAS_SGEMV)
+#define USE_OPENBLAS
 #include <cblas.h>
+#endif
+
+#ifdef USE_OPENBLAS
+// XXX: OpenBLAS HEAD implements this, but the version on my machine does not,
+// so I am defining a wrapper function so that I can use this function, since
+// the MKL version makes code extremely performant and I am not going to be
+// doing #ifdef everywhere I want to use it.
+void cblas_sgemm_batch(const CBLAS_LAYOUT Layout, const CBLAS_TRANSPOSE *transA_array, const CBLAS_TRANSPOSE *transB_array, const int *M_array, const int *N_array,
+                       const int *K_array, const float *alpha_array, const float **A_array, const int *lda_array, const float **B_array, const int *ldb_array,
+                       const float *beta_array, float **C_array, const int *ldc_array, const int group_count, const int *group_size) {
+  int matrix_index = 0;
+
+  for (int g = 0; g < group_count; ++g) {
+    for (int i = 0; i < group_size[g]; ++i) {
+      cblas_sgemm(Layout, transA_array[g], transB_array[g], M_array[g], N_array[g], K_array[g], alpha_array[g], A_array[matrix_index], lda_array[g], B_array[matrix_index],
+                  ldb_array[g], beta_array[g], C_array[matrix_index], ldc_array[g]);
+      matrix_index++;
+    }
+  }
+}
+
 #endif
 
 // ----------------------------------------------------------------------------
