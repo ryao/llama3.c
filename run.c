@@ -536,45 +536,37 @@ float *precompute_input_logits(Transformer *transformer, int *tokens, int num_to
     }
 
     for (int pos = 0; pos < num_tokens; ++pos) {
-      // 2. Calculate Attention Scores (A = Q * K^T)
-      int h;
-#pragma omp parallel for private(h)
-      for (h = 0; h < p->n_heads; h++) {
-        // get the query vector for this head
-        float *q = q_m + pos * dim + h * head_size;
-        // attention scores for this head
-        float *att = s->att + h * p->seq_len;
-        // iterate over all timesteps, including the current one
-        for (int t = 0; t <= pos; t++) {
-          // get the key vector for this head and at this timestep
-          float *k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-          // calculate the attention score as the dot product of q and k
-          float score = 0.0f;
-          for (int i = 0; i < head_size; i++) {
-            score += q[i] * k[i];
-          }
-          score *= invsqrt_head_size;
-          // save the score to the attention buffer
-          att[t] = score;
-        }
 
-        // softmax the scores to get attention weights, from 0..pos inclusively
-        softmax(att, pos + 1);
+      float *a[p->n_heads];
+      float *b[p->n_heads];
+      float *c[p->n_heads];
 
-        // weighted sum of the values, store back into xb
-        float *xb = xb_m + pos * dim + h * head_size;
-        memset(xb, 0, head_size * sizeof(float));
-        for (int t = 0; t <= pos; t++) {
-          // get the value vector for this head and at this timestep
-          float *v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-          // get the attention weight for this timestep
-          float a = att[t];
-          // accumulate the weighted value into xb
-          for (int i = 0; i < head_size; i++) {
-            xb[i] += a * v[i];
-          }
-        }
+      for (int h = 0; h < p->n_heads; ++h) {
+        a[h] = q_m + pos * dim + h * head_size;
+        b[h] = s->key_cache + loff + (h / kv_mul) * head_size;
+        c[h] = s->att + h * (pos + 1);
       }
+
+      // Calculate Attention Scores (A = Q * K^T)
+      cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (CBLAS_TRANSPOSE[]){CblasTrans}, (const int[]){1}, (const int[]){pos + 1}, (const int[]){head_size},
+                        (const float[]){invsqrt_head_size}, (const float **)a, (const int[]){head_size}, (const float **)b, (const int[]){kv_dim}, (const float[]){0.0f},
+                        (float **)c, (const int[]){pos + 1}, 1, (const int[]){p->n_heads});
+
+      // softmax the scores to get attention weights, from 0..pos inclusively
+      for (int h = 0; h < p->n_heads; h++) {
+        softmax(s->att + h * (pos + 1), pos + 1);
+      }
+
+      for (int h = 0; h < p->n_heads; ++h) {
+        a[h] = s->att + h * (pos + 1);
+        b[h] = s->value_cache + loff + (h / kv_mul) * head_size;
+        c[h] = xb_m + pos * dim + h * head_size;
+      }
+
+      // weighted sum of the values, store back into xb
+      cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (const int[]){1}, (const int[]){head_size}, (const int[]){pos + 1},
+                        (const float[]){1.0f}, (const float **)a, (const int[]){pos + 1}, (const float **)b, (const int[]){kv_dim}, (const float[]){0.0f}, (float **)c,
+                        (const int[]){head_size}, 1, (const int[]){p->n_heads});
     }
 
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, num_tokens, dim, dim, 1.0f, xb_m, dim, w->wo + l * dim * dim, dim, 1.0f, input_activations, dim);
@@ -690,44 +682,34 @@ float *forward(Transformer *transformer, int token, int pos) {
     }
 
     // multihead attention. iterate over all heads
-    int h;
-#pragma omp parallel for private(h)
-    for (h = 0; h < p->n_heads; h++) {
-      // get the query vector for this head
-      float *q = s->q + h * head_size;
-      // attention scores for this head
-      float *att = s->att + h * p->seq_len;
-      // iterate over all timesteps, including the current one
-      for (int t = 0; t <= pos; t++) {
-        // get the key vector for this head and at this timestep
-        float *k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-        // calculate the attention score as the dot product of q and k
-        float score = 0.0f;
-        for (int i = 0; i < head_size; i++) {
-          score += q[i] * k[i];
-        }
-        score *= invsqrt_head_size;
-        // save the score to the attention buffer
-        att[t] = score;
-      }
+    float *a[p->n_heads];
+    float *b[p->n_heads];
+    float *c[p->n_heads];
 
-      // softmax the scores to get attention weights, from 0..pos inclusively
-      softmax(att, pos + 1);
-
-      // weighted sum of the values, store back into xb
-      float *xb = s->xb + h * head_size;
-      memset(xb, 0, head_size * sizeof(float));
-      for (int t = 0; t <= pos; t++) {
-        // get the value vector for this head and at this timestep
-        float *v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-        // get the attention weight for this timestep
-        float a = att[t];
-        // accumulate the weighted value into xb
-        for (int i = 0; i < head_size; i++) {
-          xb[i] += a * v[i];
-        }
-      }
+    for (int h = 0; h < p->n_heads; ++h) {
+      a[h] = s->q + h * head_size;
+      b[h] = s->key_cache + loff + (h / kv_mul) * head_size;
+      c[h] = s->att + h * (pos + 1);
     }
+
+    cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (CBLAS_TRANSPOSE[]){CblasTrans}, (const int[]){1}, (const int[]){pos + 1}, (const int[]){head_size},
+                      (const float[]){invsqrt_head_size}, (const float **)a, (const int[]){head_size}, (const float **)b, (const int[]){kv_dim}, (const float[]){0.0f}, (float **)c,
+                      (const int[]){pos + 1}, 1, (const int[]){p->n_heads});
+
+    // 3. Apply Softmax to each row of A for the current pos
+    for (int h = 0; h < p->n_heads; h++) {
+      softmax(s->att + h * (pos + 1), pos + 1);
+    }
+
+    for (int h = 0; h < p->n_heads; ++h) {
+      a[h] = s->att + h * (pos + 1);
+      b[h] = s->value_cache + loff + (h / kv_mul) * head_size;
+      c[h] = s->xb + h * head_size;
+    }
+
+    cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (const int[]){1}, (const int[]){head_size}, (const int[]){pos + 1},
+                      (const float[]){1.0f}, (const float **)a, (const int[]){pos + 1}, (const float **)b, (const int[]){kv_dim}, (const float[]){0.0f}, (float **)c,
+                      (const int[]){head_size}, 1, (const int[]){p->n_heads});
 
     // final matmul to get the output of the attention
     matmul(s->xb2, s->xb, w->wo + l * dim * dim, dim, dim);
