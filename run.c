@@ -660,8 +660,7 @@ float *forward(Transformer *transformer, int token, int pos) {
 
     // qkv matmuls for this position
     matmul(s->q, s->xb, w->wq + l * dim * dim, dim, dim);
-    matmul(s->k, s->xb, w->wk + l * dim * kv_dim, dim, kv_dim);
-    matmul(s->v, s->xb, w->wv + l * dim * kv_dim, dim, kv_dim);
+    batched_matrix_multiply(s->k, s->v, s->xb, w->wk + l * dim * kv_dim, w->wv + l * dim * kv_dim, 1, dim, kv_dim);
 
     // RoPE relative positional encoding: complex-valued rotate q and k in each head
     for (int i = 0; i < p->n_heads; i++) {
@@ -724,8 +723,7 @@ float *forward(Transformer *transformer, int token, int pos) {
 
     // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
     // first calculate self.w1(x) and self.w3(x)
-    matmul(s->hb, s->xb, w->w1 + l * dim * hidden_dim, dim, hidden_dim);
-    matmul(s->hb2, s->xb, w->w3 + l * dim * hidden_dim, dim, hidden_dim);
+    batched_matrix_multiply(s->hb, s->hb2, s->xb, w->w1 + l * dim * hidden_dim, w->w3 + l * dim * hidden_dim, 1, dim, hidden_dim);
 
     // SwiGLU non-linearity
     for (int i = 0; i < hidden_dim; i++) {
