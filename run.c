@@ -457,6 +457,176 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
 
 #endif
 
+float *precompute_input_logits(Transformer *transformer, int *tokens, int num_tokens) {
+
+  // a few convenience variables
+  Config *p = &transformer->config;
+  TransformerWeights *w = &transformer->weights;
+  RunState *s = &transformer->state;
+  int dim = p->dim;
+  int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
+  int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
+  int hidden_dim = p->hidden_dim;
+  int head_size = dim / p->n_heads;
+  float invsqrt_head_size = 1.0f / sqrtf(head_size);
+
+  float *xb_m = (float *)calloc_aligned(num_tokens * dim, sizeof(float));
+  float *hb_m = (float *)calloc_aligned(num_tokens * hidden_dim, sizeof(float));
+  float *hb2_m = (float *)calloc_aligned(num_tokens * hidden_dim, sizeof(float));
+  float *q_m = (float *)calloc_aligned(num_tokens * dim, sizeof(float));
+  float *input_activations = (float *)calloc_aligned(num_tokens * dim, sizeof(float));
+  float *precomputed_sincos = calloc_aligned(num_tokens * head_size, sizeof(float));
+
+  for (int j = 0; j < head_size; j += 2) {
+    float freq = 1.0f / powf(500000.0f, (float)j / (float)head_size);
+    for (int pos = 0; pos < num_tokens; ++pos) {
+      float val = pos * freq;
+      precomputed_sincos[pos * head_size + j + 0] = sinf(val);
+      precomputed_sincos[pos * head_size + j + 1] = cosf(val);
+    }
+  }
+
+  for (int i = 0; i < num_tokens; ++i) {
+    memcpy(input_activations + i * dim, w->token_embedding_table + tokens[i] * dim, dim * sizeof(float));
+  }
+
+  // forward all the layers
+  for (unsigned long long l = 0; l < p->n_layers; l++) {
+    int loff = l * p->seq_len * kv_dim; // kv cache layer offset for convenience
+
+    for (int pos = 0; pos < num_tokens; ++pos) {
+      float *x = input_activations + pos * dim;
+      float *xb = xb_m + pos * dim;
+
+      // attention rmsnorm
+      rmsnorm(xb, x, w->rms_att_weight + l * dim, dim);
+    }
+
+    // Set pointers for K and V to point directly into the cache
+    float *k_m = s->key_cache + l * p->seq_len * kv_dim;
+    float *v_m = s->value_cache + l * p->seq_len * kv_dim;
+
+    // Pre-compute Q, K, and V using matrix multiplication
+    matrix_multiply(q_m, xb_m, w->wq + l * dim * dim, num_tokens, dim, dim);
+    batched_matrix_multiply(k_m, v_m, xb_m, w->wk + l * dim * kv_dim, w->wv + l * dim * kv_dim, num_tokens, dim, kv_dim);
+
+    // Do RoPE relative position encoding in its own loop for temporal locality
+    for (int pos = 0; pos < num_tokens; ++pos) {
+      float *x = input_activations + pos * dim;
+      float *k = s->key_cache + loff + pos * kv_dim;
+      float *q = q_m + pos * dim;
+
+      // RoPE relative positional encoding: complex-valued rotate q and k in each head
+      for (int i = 0; i < p->n_heads; i++) {
+        for (int j = 0; j < head_size; j += 2) {
+          float fcr = precomputed_sincos[pos * head_size + j + 1];
+          float fci = precomputed_sincos[pos * head_size + j + 0];
+          float q0 = q[i * head_size + j];
+          float q1 = q[i * head_size + j + 1];
+          q[i * head_size + j] = q0 * fcr - q1 * fci;
+          q[i * head_size + j + 1] = q0 * fci + q1 * fcr;
+          if (i < p->n_kv_heads) {
+            float k0 = k[i * head_size + j];
+            float k1 = k[i * head_size + j + 1];
+            k[i * head_size + j] = k0 * fcr - k1 * fci;
+            k[i * head_size + j + 1] = k0 * fci + k1 * fcr;
+          }
+        }
+      }
+    }
+
+    for (int pos = 0; pos < num_tokens; ++pos) {
+      // 2. Calculate Attention Scores (A = Q * K^T)
+      int h;
+#pragma omp parallel for private(h)
+      for (h = 0; h < p->n_heads; h++) {
+        // get the query vector for this head
+        float *q = q_m + pos * dim + h * head_size;
+        // attention scores for this head
+        float *att = s->att + h * p->seq_len;
+        // iterate over all timesteps, including the current one
+        for (int t = 0; t <= pos; t++) {
+          // get the key vector for this head and at this timestep
+          float *k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
+          // calculate the attention score as the dot product of q and k
+          float score = 0.0f;
+          for (int i = 0; i < head_size; i++) {
+            score += q[i] * k[i];
+          }
+          score *= invsqrt_head_size;
+          // save the score to the attention buffer
+          att[t] = score;
+        }
+
+        // softmax the scores to get attention weights, from 0..pos inclusively
+        softmax(att, pos + 1);
+
+        // weighted sum of the values, store back into xb
+        float *xb = xb_m + pos * dim + h * head_size;
+        memset(xb, 0, head_size * sizeof(float));
+        for (int t = 0; t <= pos; t++) {
+          // get the value vector for this head and at this timestep
+          float *v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
+          // get the attention weight for this timestep
+          float a = att[t];
+          // accumulate the weighted value into xb
+          for (int i = 0; i < head_size; i++) {
+            xb[i] += a * v[i];
+          }
+        }
+      }
+    }
+
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, num_tokens, dim, dim, 1.0f, xb_m, dim, w->wo + l * dim * dim, dim, 1.0f, input_activations, dim);
+
+    for (int pos = 0; pos < num_tokens; ++pos) {
+      float *x = input_activations + pos * dim;
+      float *xb = xb_m + pos * dim;
+
+      // ffn rmsnorm
+      rmsnorm(xb, x, w->rms_ffn_weight + l * dim, dim);
+    }
+
+    // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
+    // first calculate self.w1(x) and self.w3(x)
+    batched_matrix_multiply(hb_m, hb2_m, xb_m, w->w1 + l * dim * hidden_dim, w->w3 + l * dim * hidden_dim, num_tokens, dim, hidden_dim);
+
+    for (int pos = 0; pos < num_tokens; ++pos) {
+      float *hb = hb_m + pos * hidden_dim;
+      float *hb2 = hb2_m + pos * hidden_dim;
+
+      // SwiGLU non-linearity
+      for (int i = 0; i < hidden_dim; i++) {
+        float val = hb[i];
+        // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
+        val *= (1.0f / (1.0f + expf(-val)));
+        // elementwise multiply with w3(x)
+        val *= hb2[i];
+        hb[i] = val;
+      }
+    }
+
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, num_tokens, dim, hidden_dim, 1.0f, hb_m, hidden_dim, w->w2 + l * dim * hidden_dim, hidden_dim, 1.0f, input_activations,
+                dim);
+  }
+
+  float *x = input_activations + (num_tokens - 1) * dim;
+
+  // final rmsnorm
+  rmsnorm(x, x, w->rms_final_weight, dim);
+
+  // classifier into logits
+  matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
+  free(xb_m);
+  free(hb_m);
+  free(hb2_m);
+  free(q_m);
+  free(input_activations);
+  free(precomputed_sincos);
+
+  return s->logits;
+}
+
 float *forward(Transformer *transformer, int token, int pos) {
 
   // a few convenience variables
@@ -1022,10 +1192,17 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
   }
 
   // start the main loop
-  long start = 0;               // used to time our code, only initialized after first iteration
-  int next;                     // will store the next token in the sequence
-  int token = prompt_tokens[0]; // kick off with the first token in the prompt
-  int pos = 0;                  // position in the sequence
+  long start0, start1; // used to time our code
+  int next;            // will store the next token in the sequence
+  int token;           // the token for the forward pass
+  int pos;             // position in the sequence
+
+  start0 = time_in_ms();
+  next = sample(sampler, precompute_input_logits(transformer, prompt_tokens, num_prompt_tokens));
+  pos = num_prompt_tokens;
+  printf("%s", prompt);
+  start1 = time_in_ms();
+  goto process;
 
   while (pos < steps) {
 
@@ -1042,6 +1219,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     }
     pos++;
 
+  process:
     // data-dependent terminating condition: the BOS (=1) token delimits sequences
     if ((next == 128001 || next == 128009) && pos > num_prompt_tokens)
       break;
@@ -1050,18 +1228,14 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
     fflush(stdout);
     token = next;
-
-    // init the timer here because the first iteration can be slower
-    if (start == 0) {
-      start = time_in_ms();
-    }
   }
   printf("\n");
 
-  // report achieved tok/s (pos-1 because the timer starts after first iteration)
+  // report achieved tok/s
   if (pos > 1) {
+    fprintf(stderr, "achieved pp tok/s: %f\n", (num_prompt_tokens) / (double)(start1 - start0) * 1000);
     long end = time_in_ms();
-    fprintf(stderr, "achieved tok/s: %f\n", (pos - 1) / (double)(end - start) * 1000);
+    fprintf(stderr, "achieved tg tok/s: %f\n", (pos - num_prompt_tokens) / (double)(end - start1) * 1000);
   }
 
   free(prompt_tokens);
