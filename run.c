@@ -13,6 +13,15 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
+
+#ifdef USE_MKL
+#include <mkl.h>
+#elif defined(USE_OPENBLAS)
+#include <cblas.h>
+#elif defined(USE_BLAS_SGEMV)
+#include <cblas.h>
+#endif
+
 // ----------------------------------------------------------------------------
 // Transformer model
 
@@ -245,7 +254,23 @@ void softmax(float *x, int size) {
   }
 }
 
-#if defined(__x86_64__) && defined(__AVX2__)
+#ifdef USE_BLAS_SGEMV
+void matmul(float *restrict xout, float *restrict x, float *restrict w, int n, int d) {
+  cblas_sgemv(CblasRowMajor, // Memory layout
+              CblasNoTrans,  // Transpose W
+              d,             // Rows in W (d)
+              n,             // Columns in W (n)
+              1.0f,          // Alpha (scaling factor for W*X)
+              w,             // Matrix W
+              n,             // Leading dimension of W (number of columns)
+              x,             // Input vector X
+              1,             // Increment for X (1 for contiguous storage)
+              0.0f,          // Beta (scaling factor for Xout, initializes Xout to 0)
+              xout,          // Output vector Xout
+              1              // Increment for Xout (1 for contiguous storage)
+  );
+}
+#elif defined(__x86_64__) && defined(__AVX2__)
 
 #include <immintrin.h>
 #define likely(x) __builtin_expect(!!(x), 1)
