@@ -272,6 +272,17 @@ float *forward(Transformer *transformer, int token, int pos) {
   int hidden_dim = p->hidden_dim;
   int head_size = dim / p->n_heads;
 
+  // precompute some expensive calculations
+  float invsqrt_head_size = 1.0f / sqrtf(head_size);
+  float precomputed_sincos[head_size];
+
+  for (int j = 0; j < head_size; j += 2) {
+    float freq = 1.0f / powf(500000.0f, (float)j / (float)head_size);
+    float val = pos * freq;
+    precomputed_sincos[j + 0] = sinf(val);
+    precomputed_sincos[j + 1] = cosf(val);
+  }
+
   // copy the token embedding into x
   float *content_row = w->token_embedding_table + token * dim;
   memcpy(x, content_row, dim * sizeof(*x));
@@ -295,10 +306,8 @@ float *forward(Transformer *transformer, int token, int pos) {
     // RoPE relative positional encoding: complex-valued rotate q and k in each head
     for (int i = 0; i < p->n_heads; i++) {
       for (int j = 0; j < head_size; j += 2) {
-        float freq = 1.0f / powf(500000.0f, (float)j / (float)head_size);
-        float val = pos * freq;
-        float fcr = cosf(val);
-        float fci = sinf(val);
+        float fcr = precomputed_sincos[j + 1];
+        float fci = precomputed_sincos[j + 0];
         float q0 = s->q[i * head_size + j];
         float q1 = s->q[i * head_size + j + 1];
         s->q[i * head_size + j] = q0 * fcr - q1 * fci;
@@ -329,7 +338,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         for (int i = 0; i < head_size; i++) {
           score += q[i] * k[i];
         }
-        score /= sqrtf(head_size);
+        score *= invsqrt_head_size;
         // save the score to the attention buffer
         att[t] = score;
       }
