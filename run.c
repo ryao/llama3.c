@@ -245,6 +245,89 @@ void softmax(float *x, int size) {
   }
 }
 
+#if defined(__x86_64__) && defined(__AVX2__)
+
+#include <immintrin.h>
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
+// This assumes that arrays are aligned to 32 byte boundaries. If this is a problem, switch to loadu and storeu.
+// XXX: This is untested on n and d values that are not powers of 8, although it is expected to work.
+void matmul(float *restrict const xout, const float *restrict const x, const float *restrict const w, const int n, const int d) {
+  int i, j;
+
+  // Fast way to round down to the nearest power of 8. This is only necessary
+  // to enable the non-power of 8 handling, which we don't actually use, but it
+  // is cheap, so we leave it in place for completeness.
+  int n_rounded = n & (~7);
+  int d_rounded = d & (~7);
+
+#pragma omp parallel for private(i)
+  for (i = 0; i < d_rounded; i += 8) {
+    // Initialize 8 accumulators (one per result vector) to zero using SIMD
+    __m256 val[8] = {_mm256_setzero_ps(), _mm256_setzero_ps(), _mm256_setzero_ps(), _mm256_setzero_ps(),
+                     _mm256_setzero_ps(), _mm256_setzero_ps(), _mm256_setzero_ps(), _mm256_setzero_ps()};
+
+    const float *restrict const p[8] = {&w[(i + 0) * n], &w[(i + 1) * n], &w[(i + 2) * n], &w[(i + 3) * n], &w[(i + 4) * n], &w[(i + 5) * n], &w[(i + 6) * n], &w[(i + 7) * n]};
+
+    // Process 64 elements at a time: unroll the inner loop 8 times
+    for (j = 0; j < n_rounded; j += 8) {
+      // Load the 8 'x' values once, we will use them for 8 accumulations
+      const __m256 x_val = _mm256_load_ps(&x[j]);
+
+      // Perform the FMA operations on each of the accumulators
+      val[0] = _mm256_fmadd_ps(_mm256_load_ps(&p[0][j]), x_val, val[0]);
+      val[1] = _mm256_fmadd_ps(_mm256_load_ps(&p[1][j]), x_val, val[1]);
+      val[2] = _mm256_fmadd_ps(_mm256_load_ps(&p[2][j]), x_val, val[2]);
+      val[3] = _mm256_fmadd_ps(_mm256_load_ps(&p[3][j]), x_val, val[3]);
+      val[4] = _mm256_fmadd_ps(_mm256_load_ps(&p[4][j]), x_val, val[4]);
+      val[5] = _mm256_fmadd_ps(_mm256_load_ps(&p[5][j]), x_val, val[5]);
+      val[6] = _mm256_fmadd_ps(_mm256_load_ps(&p[6][j]), x_val, val[6]);
+      val[7] = _mm256_fmadd_ps(_mm256_load_ps(&p[7][j]), x_val, val[7]);
+    }
+
+    // Perform horizontal sum using _mm256_hadd_ps for each accumulator
+    const __m256 hsum1 = _mm256_hadd_ps(val[0], val[1]);
+    const __m256 hsum2 = _mm256_hadd_ps(val[2], val[3]);
+    const __m256 hsum3 = _mm256_hadd_ps(val[4], val[5]);
+    const __m256 hsum4 = _mm256_hadd_ps(val[6], val[7]);
+
+    // Perform a final horizontal addition on the resulting pairs
+    const __m256 hsum_final1 = _mm256_hadd_ps(hsum1, hsum2);
+    const __m256 hsum_final2 = _mm256_hadd_ps(hsum3, hsum4);
+
+    // First permutation: Swap the bottom 4 values of hsum_final2 with the top 4 of hsum_final1
+    const __m256 permuted1 = _mm256_permute2f128_ps(hsum_final1, hsum_final2, 0x30); // Swap top 4 of hsum_final1 with bottom 4 of hsum_final2
+
+    // Second permutation: Swap the remaining values (top of hsum_final2 with bottom of hsum_final1)
+    const __m256 permuted2 = _mm256_permute2f128_ps(hsum_final1, hsum_final2, 0x21); // Swap top 4 of hsum_final2 with bottom 4 of hsum_final1
+
+    // Final addition: Add the two permuted results
+    const __m256 final_result = _mm256_add_ps(permuted1, permuted2);
+
+    // Store the final results in xout (only one store operation needed)
+    _mm256_store_ps(&xout[i], final_result);
+  }
+
+  if (unlikely(n_rounded != n)) {
+    for (i = 0; i < d_rounded; i += 8) {
+      for (j = n_rounded; j < n; j++) {
+        for (int k = 0; k < 8; k++) {
+          xout[i] += w[i * n + j] * x[j];
+        }
+      }
+    }
+  }
+  if (unlikely(d_rounded != d)) {
+    for (; i < d; i++) {
+      for (j = 0; j < n; j++) {
+        xout[i] += w[i * n + j] * x[j];
+      }
+    }
+  }
+}
+#else
+
 void matmul(float *xout, float *x, float *w, int n, int d) {
   // W (d,n) @ x (n,) -> xout (d,)
   // by far the most amount of time is spent inside this little function
@@ -258,6 +341,8 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
     xout[i] = val;
   }
 }
+
+#endif
 
 float *forward(Transformer *transformer, int token, int pos) {
 
