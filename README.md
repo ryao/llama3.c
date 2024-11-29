@@ -1,3 +1,25 @@
+## llama3.c fork
+
+This fork is currently meant to be compiled using the Intel MKL:
+
+```bash
+$ gcc -DUSE_MKL -ggdb3 -Ofast -march=native -I"${MKLROOT}/include" -L${MKLROOT}/lib/intel64 -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl -lm -ldl -lm -lmvec run.c
+```
+
+It is for doing some R&D involving inferencing. Interestingly, it runs prompt processing for inferencing about 15% faster than llama.cpp when using FP32 on the Ryzen 7 5800X when using a 340 token test prompt:
+
+```
+llama.cpp performance:
+
+pp tok/s: 46.14
+tg tok/s: 1.29
+
+This fork's performance:
+
+pp tok/s: 53.70
+tg tok/s: 1.33
+```
+
 ## llama3.c - A faithful clone of Karpathy's llama2.c but fully functional with LLaMA 3 8B base and instruct models.
 
 See [Andrej Karpathy's repo](https://github.com/karpathy/llama2.c) for the real deal built for llama2.c architecture and many other cool models he has built.
