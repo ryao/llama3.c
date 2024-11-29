@@ -23,7 +23,67 @@
 #include <cblas.h>
 #endif
 
-#ifdef USE_OPENBLAS
+#if !defined(USE_MKL) && !defined(USE_OPENBLAS)
+typedef enum { CblasRowMajor = 101, CblasColMajor = 102 } CBLAS_LAYOUT;
+typedef enum { CblasNoTrans = 111, CblasTrans = 112 } CBLAS_TRANSPOSE;
+
+#define TILE_SIZE 64 // Tile size for cache optimization
+
+/*
+ * XXX: This is super-slow. Make it faster to try to match the Intel MKL.
+ */
+void cblas_sgemm(const CBLAS_LAYOUT Layout, const CBLAS_TRANSPOSE TransA, const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K, const float alpha, const float *A,
+                 const int lda, const float *B, const int ldb, const float beta, float *C, const int ldc) {
+  // Check for Row-Major layout (only row-major supported in this implementation)
+  if (Layout != CblasRowMajor) {
+    fprintf(stderr, "Only Row-Major layout is supported in this implementation.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  // Transposition flags
+  int transA_flag = (TransA == CblasTrans);
+  int transB_flag = (TransB == CblasTrans);
+
+  // Initialize matrix C with beta scaling
+  for (int i = 0; i < M; i++) {
+    for (int j = 0; j < N; j++) {
+      C[i * ldc + j] *= beta;
+    }
+  }
+
+  // Perform tiled matrix multiplication
+  int i_tile;
+  for (i_tile = 0; i_tile < M; i_tile += TILE_SIZE) {
+    for (int j_tile = 0; j_tile < N; j_tile += TILE_SIZE) {
+      for (int k_tile = 0; k_tile < K; k_tile += TILE_SIZE) {
+
+        // Compute bounds for current tile
+        int i_max = i_tile + TILE_SIZE > M ? M : i_tile + TILE_SIZE;
+        int j_max = j_tile + TILE_SIZE > N ? N : j_tile + TILE_SIZE;
+        int k_max = k_tile + TILE_SIZE > K ? K : k_tile + TILE_SIZE;
+
+        // Perform computation for the current tile
+        for (int i = i_tile; i < i_max; i++) {
+          for (int j = j_tile; j < j_max; j++) {
+            float sum = 0.0f;
+
+            for (int k = k_tile; k < k_max; k++) {
+              float a_ik = transA_flag ? A[k * lda + i] : A[i * lda + k];
+              float b_kj = transB_flag ? B[j * ldb + k] : B[k * ldb + j];
+              sum += a_ik * b_kj;
+            }
+
+            C[i * ldc + j] += alpha * sum;
+          }
+        }
+      }
+    }
+  }
+}
+
+#endif
+
+#if defined(USE_OPENBLAS) || !defined(USE_MKL)
 // XXX: OpenBLAS HEAD implements this, but the version on my machine does not,
 // so I am defining a wrapper function so that I can use this function, since
 // the MKL version makes code extremely performant and I am not going to be
