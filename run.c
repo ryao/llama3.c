@@ -276,6 +276,72 @@ void softmax(float *x, int size) {
   }
 }
 
+#if defined(USE_OPENBLAS) || defined(USE_MKL)
+void matrix_multiply(float *out, float *b, float *a, int t, int n, int d) {
+  // b (t, n) is row-major
+  // a (d, n) is column-major
+
+  // We want: out = b * a^T
+
+  // out is t x d
+  // a is d x n
+  // b is t x n
+
+  float alpha = 1.0f;
+  float beta = 0.0f;
+
+  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, t, d, n, alpha, b, n, a, n, beta, out, d);
+}
+
+void batched_matrix_multiply(float *out0, float *out1, float *b, float *a0, float *a1, int t, int n, int d) {
+
+  float alpha = 1.0f;
+  float beta = 0.0f;
+
+  cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, // transa for a0 and a1
+                    (CBLAS_TRANSPOSE[]){CblasTrans},                  // transb for b (both times)
+                    (const int[]){t},                                 // m for out0 and out1
+                    (const int[]){d},                                 // n for out0 and out1
+                    (const int[]){n},                                 // k for a0 and a1
+                    (const float[]){alpha},                           // alpha for both
+                    (const float *[]){b, b},                          // b for both
+                    (const int[]){n},                                 // ldb for both
+                    (const float *[]){a0, a1},                        // a0 and a1
+                    (const int[]){n},                                 // lda for both
+                    (const float[]){beta},                            // beta for both
+                    (float *[]){out0, out1},                          // out0 and out1
+                    (const int[]){d},                                 // ldc for both
+                    1,                                                // group_count (number of batches)
+                    (const int[]){2}                                  // batch_count (number of matrices in each batch)
+  );
+}
+#else
+void matrix_multiply(float *out, float *b, float *a, int t, int n, int d) {
+  for (int i = 0; i < t; ++i) {
+    for (int j = 0; j < d; ++j) {
+      out[i * d + j] = 0.0f;
+      for (int k = 0; k < n; ++k) {
+        out[i * d + j] += b[i * n + k] * a[j * n + k];
+      }
+    }
+  }
+}
+
+void batched_matrix_multiply(float *out0, float *out1, float *b, float *a0, float *a1, int t, int n, int d) {
+  for (int i = 0; i < t; ++i) {
+    for (int j = 0; j < d; ++j) {
+      out0[i * d + j] = 0.0f;
+      out1[i * d + j] = 0.0f;
+
+      for (int k = 0; k < n; k++) {
+        out0[i * d + j] += b[i * n + k] * a0[j * n + k];
+        out1[i * d + j] += b[i * n + k] * a1[j * n + k];
+      }
+    }
+  }
+}
+#endif
+
 #ifdef USE_BLAS_SGEMV
 void matmul(float *restrict xout, float *restrict x, float *restrict w, int n, int d) {
   cblas_sgemv(CblasRowMajor, // Memory layout
