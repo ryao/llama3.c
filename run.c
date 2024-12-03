@@ -534,7 +534,7 @@ float *precompute_input_logits(Transformer *transformer, int *tokens, int num_to
   float *hb_m = (float *)calloc_aligned(num_tokens * hidden_dim, sizeof(float));
   float *hb2_m = (float *)calloc_aligned(num_tokens * hidden_dim, sizeof(float));
   float *q_m = (float *)calloc_aligned(num_tokens * dim, sizeof(float));
-  float *att_m = (float *)calloc_aligned(num_tokens * p->n_heads * p->seq_len, sizeof(float));
+  float *att_m = (float *)calloc_aligned(num_tokens * p->n_heads * num_tokens, sizeof(float));
   float *input_activations = (float *)calloc_aligned(num_tokens * dim, sizeof(float));
   float *precomputed_sincos = calloc_aligned(num_tokens * head_size, sizeof(float));
 
@@ -596,36 +596,39 @@ float *precompute_input_logits(Transformer *transformer, int *tokens, int num_to
       }
     }
 
-    for (int pos = 0; pos < num_tokens; ++pos) {
-
-      float *a[p->n_heads];
-      float *b[p->n_heads];
-      float *c[p->n_heads];
-
-      for (int h = 0; h < p->n_heads; ++h) {
-        a[h] = q_m + pos * dim + h * head_size;
-        b[h] = s->key_cache + loff + (h / kv_mul) * head_size;
-        c[h] = att_m + pos * p->n_heads * p->seq_len + h * p->seq_len;
-      }
-
-      // Calculate Attention Scores (A = Q * K^T)
-      // Multiply qcache vector (1, pos + 1) by kcache sub-matrix (pos + 1, head_size)
-      cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (CBLAS_TRANSPOSE[]){CblasTrans}, (const int[]){1}, (const int[]){pos + 1}, (const int[]){head_size},
-                        (const float[]){invsqrt_head_size}, (const float **)a, (const int[]){dim}, (const float **)b, (const int[]){kv_dim}, (const float[]){0.0f}, (float **)c,
-                        (const int[]){p->n_heads * p->seq_len}, 1, (const int[]){p->n_heads});
-
-      // softmax the scores to get attention weights, from 0..pos inclusively
-      for (int h = 0; h < p->n_heads; h++) {
-        softmax(att_m + pos * p->n_heads * p->seq_len + h * p->seq_len, pos + 1);
-      }
-    }
-
     float *a[p->n_heads];
     float *b[p->n_heads];
     float *c[p->n_heads];
 
     for (int h = 0; h < p->n_heads; ++h) {
-      a[h] = att_m + h * p->seq_len;
+      a[h] = q_m + h * head_size;
+      b[h] = s->key_cache + loff + (h / kv_mul) * head_size;
+      c[h] = att_m + h * num_tokens;
+    }
+
+    // Calculate Attention Scores (A = Q * K^T)
+    // Multiply qcache vector (1, num_tokens) by kcache sub-matrix (num_tokens, head_size)
+    cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (CBLAS_TRANSPOSE[]){CblasTrans}, (const int[]){num_tokens}, (const int[]){num_tokens},
+                      (const int[]){head_size}, (const float[]){invsqrt_head_size}, (const float **)a, (const int[]){dim}, (const float **)b, (const int[]){kv_dim},
+                      (const float[]){0.0f}, (float **)c, (const int[]){p->n_heads * num_tokens}, 1, (const int[]){p->n_heads});
+
+    for (int pos = 0; pos < num_tokens; ++pos) {
+      // softmax the scores to get attention weights, from 0..pos inclusively
+      for (int h = 0; h < p->n_heads; h++) {
+        softmax(att_m + pos * p->n_heads * num_tokens + h * num_tokens, pos + 1);
+        /*
+         * We must zero the unused values to allow for the next
+         * cblas_sgemm_batch() call to work properly, since the previous matrix
+         * multiplication calculated values beyond the end of pos + 1 and doing
+         * the next calculation correctly requires this to be a rectangular
+         * matrix.
+         */
+        memset(att_m + pos * p->n_heads * num_tokens + h * num_tokens + pos + 1, 0, (num_tokens - pos - 1) * sizeof(float));
+      }
+    }
+
+    for (int h = 0; h < p->n_heads; ++h) {
+      a[h] = att_m + h * num_tokens;
       b[h] = s->value_cache + loff + (h / kv_mul) * head_size;
       c[h] = xb_m + h * head_size;
     }
@@ -633,7 +636,7 @@ float *precompute_input_logits(Transformer *transformer, int *tokens, int num_to
     // Multiply attention matrix (num_tokens, num_tokens) by vcache sub-matrix (num_tokens, head_size)
     // XXX: There are many 0s being multiplied here since the attention matrix is triangular
     cblas_sgemm_batch(CblasRowMajor, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (CBLAS_TRANSPOSE[]){CblasNoTrans}, (const int[]){num_tokens}, (const int[]){head_size},
-                      (const int[]){num_tokens}, (const float[]){1.0f}, (const float **)a, (const int[]){p->n_heads * p->seq_len}, (const float **)b, (const int[]){kv_dim},
+                      (const int[]){num_tokens}, (const float[]){1.0f}, (const float **)a, (const int[]){p->n_heads * num_tokens}, (const float **)b, (const int[]){kv_dim},
                       (const float[]){0.0f}, (float **)c, (const int[]){dim}, 1, (const int[]){p->n_heads});
 
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, num_tokens, dim, dim, 1.0f, xb_m, dim, w->wo + l * dim * dim, dim, 1.0f, input_activations, dim);
