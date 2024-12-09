@@ -540,10 +540,25 @@ float *precompute_input_logits(Transformer *transformer, int *tokens, int num_to
 
   for (int j = 0; j < head_size; j += 2) {
     float freq = 1.0f / powf(500000.0f, (float)j / (float)head_size);
-    for (int pos = 0; pos < num_tokens; ++pos) {
-      float val = pos * freq;
-      precomputed_sincos[pos * head_size + j + 0] = sinf(val);
-      precomputed_sincos[pos * head_size + j + 1] = cosf(val);
+
+    // Initialize the first values for position 0
+    precomputed_sincos[j + 0] = 0.0f; // sin(0)
+    precomputed_sincos[j + 1] = 1.0f; // cos(0)
+
+    // Compute the sine and cosine for position 1 using the frequency
+    float sin_delta = sinf(freq);
+    float cos_delta = cosf(freq);
+
+    for (int pos = 1; pos < num_tokens; ++pos) {
+      // Retrieve the previous sine and cosine values
+      float prev_sin = precomputed_sincos[(pos - 1) * head_size + j + 0];
+      float prev_cos = precomputed_sincos[(pos - 1) * head_size + j + 1];
+
+      // Apply the angle addition formulas recursively:
+      // sin(a + b) = sin(a)cos(b) + cos(a)sin(b)
+      // cos(a + b) = cos(a)cos(b) - sin(a)sin(b)
+      precomputed_sincos[pos * head_size + j + 0] = prev_sin * cos_delta + prev_cos * sin_delta;
+      precomputed_sincos[pos * head_size + j + 1] = prev_cos * cos_delta - prev_sin * sin_delta;
     }
   }
 
