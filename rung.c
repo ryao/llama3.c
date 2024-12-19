@@ -633,9 +633,6 @@ float *forward(Transformer *transformer, int token, int pos) {
   const float one = 1.0f;
   const float zero = 0.0f;
 
-  cudaStream_t stream;
-  cudaStreamCreate(&stream);
-
   // copy the token embedding into x  -- **Corrected section**
   CHECK_CUDA(cudaMemcpy(x, transformer->weights.token_embedding_table + token * dim, dim * sizeof(float), cudaMemcpyHostToDevice));
 
@@ -695,7 +692,7 @@ float *forward(Transformer *transformer, int token, int pos) {
     h_pointers_h[1] = s->hb2;
 
     // Copy the arrays of pointers from host to device
-    CHECK_CUDA(cudaMemcpyAsync(ptrs, ptrs_h, (2 * 3 + p->n_heads * 5) * sizeof(void *), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpy(ptrs, ptrs_h, (2 * 3 + p->n_heads * 5) * sizeof(void *), cudaMemcpyHostToDevice));
 
     // attention rmsnorm
     rmsnorm_gpu(s->xb, x, w->rms_att_weight + l * dim, dim, handle);
@@ -712,8 +709,6 @@ float *forward(Transformer *transformer, int token, int pos) {
                               CUDA_R_32F, 1, CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 
     rope_rotary_encoding_gpu(s->q, s->k, p->n_heads, p->n_kv_heads, head_size, pos);
-
-    cudaStreamSynchronize(stream);
 
     // 2. Multiply Q by K^T for each head to get attention scores
     CHECK_CUBLAS(cublasGemmBatchedEx(transformer->handle, CUBLAS_OP_T, CUBLAS_OP_N, pos + 1, 1, head_size, &invsqrt_head_size, (const void *const *)k_pointers_d, CUDA_R_32F,
@@ -759,7 +754,6 @@ float *forward(Transformer *transformer, int token, int pos) {
   CHECK_CUBLAS(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, p->vocab_size, dim,
                             &one, s->xb_bf16, CUDA_R_16BF, 1, w->wcls, CUDA_R_16BF, dim, &zero, s->logits, CUDA_R_32F, 1, CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 
-  cudaStreamDestroy(stream);
   return s->logits;
 }
 
