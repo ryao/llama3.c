@@ -105,7 +105,6 @@ void fp32_to_bf16_array(bf16 *output, float *input, size_t size) {
     __m256i vec_bf16_shuffled = _mm256_shuffle_epi8(vec_u32, broadcast_shuffle_mask);
 
     // Permute the 64 bit lanes to combine the two halves
-    const __m256i permute_mask = _mm256_setr_epi64x(0, 2, -1, -1);
     __m256i vec_bf16_permuted = _mm256_permute4x64_epi64(vec_bf16_shuffled, 0b11011000);
 
     // Extract the lower 128-bit lanes to store into memory
@@ -114,7 +113,7 @@ void fp32_to_bf16_array(bf16 *output, float *input, size_t size) {
     _mm_storeu_si128((__m128i *)(output + i), vec_bf16_low);
   }
 
-  // Handle remaining elements (if size is not a multiple of 16)
+  // Handle remaining elements (if size is not a multiple of 8)
   for (; i < size; ++i) {
     output[i] = fp32_to_bf16(input[i]);
   }
