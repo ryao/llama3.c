@@ -98,12 +98,11 @@ void fp32_to_bf16_array(bf16 *output, float *input, size_t size) {
 
     // Convert floats to 32 bit integers and truncate to bf16
     __m256i vec_u32 = _mm256_castps_si256(vec_f32);
-    __m256i vec_bf16_packed = _mm256_srli_epi32(vec_u32, 16); // Each lane is now a truncated 16-bit int (lower 16-bits are zero)
 
     // Shuffle within the 128-bit lanes using _mm256_shuffle_epi8
-    const __m128i shuffle_mask = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+    const __m128i shuffle_mask = _mm_setr_epi8(2, 3, 6, 7, 10, 11, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
     __m256i broadcast_shuffle_mask = _mm256_broadcastsi128_si256(shuffle_mask);
-    __m256i vec_bf16_shuffled = _mm256_shuffle_epi8(vec_bf16_packed, broadcast_shuffle_mask);
+    __m256i vec_bf16_shuffled = _mm256_shuffle_epi8(vec_u32, broadcast_shuffle_mask);
 
     // Permute the 64 bit lanes to combine the two halves
     const __m256i permute_mask = _mm256_setr_epi64x(0, 2, -1, -1);
