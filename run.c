@@ -538,6 +538,12 @@ float *precompute_input_logits(Transformer *transformer, int *tokens, int num_to
   float *input_activations = (float *)calloc_aligned(num_tokens * dim, sizeof(float));
   float *precomputed_sincos = calloc_aligned(num_tokens * head_size, sizeof(float));
 
+  // Precompute the base frequency multiplier
+  float base_freq = powf(500000.0f, -2.0f / (float)head_size);
+
+  // Initialize the starting frequency
+  float freq = 1.0f;
+
   for (int j = 0; j < head_size; j += 2) {
     float freq = 1.0f / powf(500000.0f, (float)j / (float)head_size);
 
@@ -560,6 +566,8 @@ float *precompute_input_logits(Transformer *transformer, int *tokens, int num_to
       precomputed_sincos[pos * head_size + j + 0] = prev_sin * cos_delta + prev_cos * sin_delta;
       precomputed_sincos[pos * head_size + j + 1] = prev_cos * cos_delta - prev_sin * sin_delta;
     }
+    // Update the frequency for the next pair using the recurrence relation
+    freq *= base_freq;
   }
 
   for (int i = 0; i < num_tokens; ++i) {
@@ -722,11 +730,17 @@ float *forward(Transformer *transformer, int token, int pos) {
   float invsqrt_head_size = 1.0f / sqrtf(head_size);
   float precomputed_sincos[head_size];
 
+  // Precompute the base frequency multiplier
+  float base_freq = powf(500000.0f, -2.0f / (float)head_size);
+
+  // Initialize the starting frequency
+  float freq = 1.0f;
+
   for (int j = 0; j < head_size; j += 2) {
-    float freq = 1.0f / powf(500000.0f, (float)j / (float)head_size);
     float val = pos * freq;
     precomputed_sincos[j + 0] = sinf(val);
     precomputed_sincos[j + 1] = cosf(val);
+    freq *= base_freq;
   }
 
   // copy the token embedding into x
