@@ -7,7 +7,9 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <fcntl.h>
+#include <immintrin.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,58 +72,32 @@ static inline uint16_t fp32_to_bf16(float fp32) {
 }
 
 // Utility function to convert FP32 to BF16
-/*void fp32_to_bf16_array(uint16_t *out, float *in, size_t n) {
-  for (size_t i = 0; i < n; i++) {
-    out[i] = fp32_to_bf16(in[i]);
-  }
-}*/
-
-#include <immintrin.h>
-#include <stdint.h>
-#include <stdlib.h>
-
-// Assuming bf16 is represented as a 16-bit integer
-typedef uint16_t bf16;
-
-void fp32_to_bf16_array(bf16 *output, float *input, size_t size) {
-
+// We assume no subnormal numbers are passed
+void fp32_to_bf16_array(uint16_t *output, float *input, size_t size) {
   if (input == NULL || output == NULL || size == 0) {
-    return; // Handle invalid input
+    return;
   }
 
   size_t i = 0;
-  size_t avx_loop_size = size - (size % 8); // Process 8 floats at a time with AVX2
+  for (; i + 8 <= size; i += 8) {
+    __m256 input_vec = _mm256_loadu_ps(input + i);
 
-  for (; i < avx_loop_size; i += 8) {
-    // Load 8 floats into a __m256 vector
-    __m256 vec_f32 = _mm256_loadu_ps(input + i);
+    // Do BF16 conversion
+    __m256i int_vec = _mm256_castps_si256(input_vec);
+    __m256i shifted_vec = _mm256_srli_epi32(int_vec, 16);
+    __m128i upper_half = _mm256_extracti128_si256(shifted_vec, 1);
+    __m128i lower_half = _mm256_extracti128_si256(shifted_vec, 0);
+    __m128i bf16 = _mm_packus_epi32(lower_half, upper_half);
 
-    // Convert floats to 32 bit integers and truncate to bf16
-    __m256i vec_u32 = _mm256_castps_si256(vec_f32);
-    __m256i vec_bf16_packed = _mm256_srli_epi32(vec_u32, 16); // Each lane is now a truncated 16-bit int (lower 16-bits are zero)
-
-    // Shuffle within the 128-bit lanes using _mm256_shuffle_epi8
-    const __m128i shuffle_mask = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
-    __m256i broadcast_shuffle_mask = _mm256_broadcastsi128_si256(shuffle_mask);
-    __m256i vec_bf16_shuffled = _mm256_shuffle_epi8(vec_bf16_packed, broadcast_shuffle_mask);
-
-    // Permute the 64 bit lanes to combine the two halves
-    const __m256i permute_mask = _mm256_setr_epi64x(0, 2, -1, -1);
-    __m256i vec_bf16_permuted = _mm256_permute4x64_epi64(vec_bf16_shuffled, 0b11011000);
-
-    // Extract the lower 128-bit lanes to store into memory
-    __m128i vec_bf16_low = _mm256_extracti128_si256(vec_bf16_permuted, 0);
-
-    _mm_storeu_si128((__m128i *)(output + i), vec_bf16_low);
+    _mm_storeu_si128((__m128i *)(output + i), bf16);
   }
 
-  // Handle remaining elements (if size is not a multiple of 16)
+  // Handle remaining elements (if size is not a multiple of 8)
   for (; i < size; ++i) {
     output[i] = fp32_to_bf16(input[i]);
   }
 }
 
-// Utility function to convert BF16 to FP32
 void bf16_to_fp32_array(float *out, uint16_t *in, size_t n) {
   for (size_t i = 0; i < n; i++) {
     out[i] = bf16_to_fp32(in[i]);
@@ -330,7 +306,7 @@ void memory_map_weights(TransformerWeights *w, Config *p, float *ptr, int shared
 void malloc_weights_gpu(TransformerWeights *w, Config *p) {
   int head_size = p->dim / p->n_heads;
   unsigned long long n_layers = p->n_layers;
-  //CHECK_CUDA(cudaMalloc((void **)&w->token_embedding_table, p->vocab_size * p->dim * sizeof(float)));
+  // CHECK_CUDA(cudaMalloc((void **)&w->token_embedding_table, p->vocab_size * p->dim * sizeof(float)));
   CHECK_CUDA(cudaMalloc((void **)&w->rms_att_weight, n_layers * p->dim * sizeof(float)));
   CHECK_CUDA(cudaMalloc((void **)&w->wq, n_layers * p->dim * (p->n_heads * head_size) * sizeof(uint16_t)));
   CHECK_CUDA(cudaMalloc((void **)&w->wk, n_layers * p->dim * (p->n_kv_heads * head_size) * sizeof(uint16_t)));
@@ -345,18 +321,18 @@ void malloc_weights_gpu(TransformerWeights *w, Config *p) {
 }
 
 void free_weights_gpu(TransformerWeights *w) {
-    //CHECK_CUDA(cudaFree(w->token_embedding_table));
-    CHECK_CUDA(cudaFree(w->rms_att_weight));
-    CHECK_CUDA(cudaFree(w->wq));
-    CHECK_CUDA(cudaFree(w->wk));
-    CHECK_CUDA(cudaFree(w->wv));
-    CHECK_CUDA(cudaFree(w->wo));
-    CHECK_CUDA(cudaFree(w->rms_ffn_weight));
-    CHECK_CUDA(cudaFree(w->w1));
-    CHECK_CUDA(cudaFree(w->w2));
-    CHECK_CUDA(cudaFree(w->w3));
-    CHECK_CUDA(cudaFree(w->rms_final_weight));
-    CHECK_CUDA(cudaFree(w->wcls));
+  // CHECK_CUDA(cudaFree(w->token_embedding_table));
+  CHECK_CUDA(cudaFree(w->rms_att_weight));
+  CHECK_CUDA(cudaFree(w->wq));
+  CHECK_CUDA(cudaFree(w->wk));
+  CHECK_CUDA(cudaFree(w->wv));
+  CHECK_CUDA(cudaFree(w->wo));
+  CHECK_CUDA(cudaFree(w->rms_ffn_weight));
+  CHECK_CUDA(cudaFree(w->w1));
+  CHECK_CUDA(cudaFree(w->w2));
+  CHECK_CUDA(cudaFree(w->w3));
+  CHECK_CUDA(cudaFree(w->rms_final_weight));
+  CHECK_CUDA(cudaFree(w->wcls));
 }
 
 void copy_weights_to_gpu(TransformerWeights *dest_gpu, TransformerWeights *src, Config *p) {
@@ -368,7 +344,7 @@ void copy_weights_to_gpu(TransformerWeights *dest_gpu, TransformerWeights *src, 
 
   // 1. token_embedding_table
   size_t size = p->vocab_size * p->dim;
-  //CHECK_CUDA(cudaMemcpy(dest_gpu->token_embedding_table, src->token_embedding_table, size * sizeof(float), cudaMemcpyHostToDevice));
+  // CHECK_CUDA(cudaMemcpy(dest_gpu->token_embedding_table, src->token_embedding_table, size * sizeof(float), cudaMemcpyHostToDevice));
 
   // 2. rms_att_weight
   size = n_layers * p->dim;
@@ -723,10 +699,9 @@ float *forward(Transformer *transformer, int token, int pos) {
                                      CUBLAS_GEMM_DEFAULT));
 
     // final matmul to get the output of the attention
-  fp32_to_bf16_array_gpu(s->xb_bf16, s->xb, dim);
-  CHECK_CUBLAS(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, dim, dim,
-                            &one, s->xb_bf16, CUDA_R_16BF, 1, w->wo + l * dim * dim, CUDA_R_16BF, dim, &one, x, CUDA_R_32F, 1,
-                            CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+    fp32_to_bf16_array_gpu(s->xb_bf16, s->xb, dim);
+    CHECK_CUBLAS(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, dim, dim, &one, s->xb_bf16, CUDA_R_16BF, 1, w->wo + l * dim * dim, CUDA_R_16BF, dim, &one, x, CUDA_R_32F, 1,
+                              CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 
     // ffn rmsnorm
     rmsnorm_gpu(s->xb, x, w->rms_ffn_weight + l * dim, dim, handle);
@@ -751,8 +726,8 @@ float *forward(Transformer *transformer, int token, int pos) {
 
   // classifier into logits
   fp32_to_bf16_array_gpu(s->xb_bf16, x, dim);
-  CHECK_CUBLAS(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, p->vocab_size, dim,
-                            &one, s->xb_bf16, CUDA_R_16BF, 1, w->wcls, CUDA_R_16BF, dim, &zero, s->logits, CUDA_R_32F, 1, CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+  CHECK_CUBLAS(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, p->vocab_size, dim, &one, s->xb_bf16, CUDA_R_16BF, 1, w->wcls, CUDA_R_16BF, dim, &zero, s->logits, CUDA_R_32F, 1,
+                            CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 
   return s->logits;
 }
